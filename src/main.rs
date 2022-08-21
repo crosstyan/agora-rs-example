@@ -1,11 +1,51 @@
 extern crate dirs;
 use agora_rtsa_rs::agoraRTC;
-use agora_rtsa_rs::agoraRTC::LogLevel;
-use agora_rtsa_rs::C;
+use agora_rtsa_rs::agoraRTC::{LogLevel, VideoDataType, VideoFrameType, VideoStreamQuality};
+use agora_rtsa_rs::C::{self, video_data_type_e_VIDEO_DATA_TYPE_H264};
+use anyhow::{anyhow, bail, Context};
+use gst::element_error;
+use gst::glib;
+use gst::glib::closure;
+use gst::prelude::*;
+use gst_app::{AppSink, AppSrc};
 use log::{error, info, warn};
 use std::env;
 use std::ffi::CString;
 use std::thread::sleep;
+use std::sync::{Arc, Mutex};
+
+
+// Check if all GStreamer plugins we require are available
+fn check_plugins() -> Result<(), anyhow::Error> {
+    let needed = [
+        "videotestsrc",
+        "audiotestsrc",
+        "videoconvert",
+        "audioconvert",
+        "autodetect",
+        "clockoverlay",
+        "videoscale",
+        "x264enc",
+        "h264parse",
+        "appsink",
+    ];
+
+    let registry = gst::Registry::get();
+
+    // export GST_PLUGIN_PATH=/opt/homebrew/lib/gstreamer-1.0
+    // to find all plugins for macOS
+    let missing = needed
+        .iter()
+        .filter(|n| registry.find_plugin(n).is_none())
+        .cloned()
+        .collect::<Vec<_>>();
+
+    if !missing.is_empty() {
+        bail!("Missing plugins: {:?}", missing);
+    } else {
+        Ok(())
+    }
+}
 
 fn result_verify(res: Result<(), agoraRTC::ErrorCode>, action_name: &str) {
     match res {
@@ -39,6 +79,9 @@ fn main() {
     builder.target(env_logger::Target::Stdout);
     builder.init();
 
+    gst::init();
+    check_plugins();
+
     info!("Agora Version: {}", agoraRTC::get_version());
     result_verify(agoraRTC::license_verify(cert.as_str()), "license_verify");
 
@@ -58,6 +101,58 @@ fn main() {
 
     // You have to set logs before deallocation
     let opt_t: C::rtc_service_option_t = opt.to_c_type(log_path_c.as_ptr());
+
+    /// If frame_per_sec equals zero, then real timestamp will be used. So I don't need to calculate them.
+    let video_opt = C::video_frame_info_t {
+        data_type: VideoDataType::H264.into(),
+        stream_type: VideoStreamQuality::LOW.into(),
+        frame_type: VideoFrameType::AUTO.into(),
+        frame_rate: 0,
+    };
+
+    // Create the GStreamer pipeline
+    let pipeline = gst::parse_launch(
+        "videotestsrc name=src is-live=true ! \
+        clockoverlay ! \
+        videoconvert ! \
+        x264enc speed-preset=ultrafast tune=zerolatency byte-stream=true intra-refresh=true ! \
+        h264parse ! \
+        appsink name=agora ",
+    )
+    .expect("not a elem");
+
+    // Downcast from gst::Element to gst::Pipeline
+    let pipeline = pipeline
+        .downcast::<gst::Pipeline>()
+        .expect("not a pipeline");
+    // let source = pipeline.by_name("src").expect("can't find src");
+    // Get access to the webrtcbin by name
+    let appsink = pipeline
+        .by_name("agora")
+        .expect("can't find agora")
+        .dynamic_cast::<AppSink>()
+        .expect("should be an appsink");
+    // https://gitlab.freedesktop.org/gstreamer/gstreamer-rs/-/blob/main/tutorials/src/bin/basic-tutorial-8.rs
+    appsink.clone().set_callbacks(
+        gst_app::AppSinkCallbacks::builder()
+            .new_sample(move |_| {
+                if let Ok(_sample) = appsink.pull_sample() {
+                    use std::io::{self, Write};
+                    // The only thing we do in this example is print a * to indicate a received buffer
+                    print!("*");
+                    let _ = io::stdout().flush();
+                }
+
+                Ok(gst::FlowSuccess::Ok)
+            })
+            .build()
+    );
+    pipeline
+        .set_state(gst::State::Playing)
+        .expect("set playing error");
+    // Create a stream for handling the GStreamer message asynchronously
+    // let bus = pipeline.bus().unwrap();
+    // let send_gst_msg_rx = bus.stream();
 
     result_verify(agoraRTC::init(app_id, opt_t, handlers), "init");
     let conn_id: u32 = match agoraRTC::create_connection() {
@@ -79,6 +174,9 @@ fn main() {
         "join channel",
     );
     sleep(std::time::Duration::from_millis(5000));
+    pipeline
+        .set_state(gst::State::Paused)
+        .expect("set state error");
     result_verify(agoraRTC::leave_channel(conn_id), "leave channel");
     result_verify(agoraRTC::destroy_connection(conn_id), "destory connection");
     result_verify(agoraRTC::deinit(), "dinit")
