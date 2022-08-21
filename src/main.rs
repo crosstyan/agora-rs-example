@@ -25,6 +25,7 @@ fn check_plugins() -> Result<(), anyhow::Error> {
         "clockoverlay",
         "videoscale",
         "x264enc",
+        "x265enc",
         "h264parse",
         "appsink",
     ];
@@ -105,7 +106,7 @@ fn main() {
 
     /// If frame_per_sec equals zero, then real timestamp will be used. So I don't need to calculate them.
     let video_opt = C::video_frame_info_t {
-        data_type: VideoDataType::H264.into(),
+        data_type: VideoDataType::H265.into(),
         stream_type: VideoStreamQuality::LOW.into(),
         frame_type: VideoFrameType::AUTO.into(),
         frame_rate: 0,
@@ -116,8 +117,7 @@ fn main() {
         "videotestsrc name=src is-live=true ! \
         clockoverlay ! \
         videoconvert ! \
-        x264enc speed-preset=ultrafast tune=zerolatency byte-stream=true intra-refresh=true ! \
-        h264parse ! \
+        x265enc ! \
         appsink name=agora ",
     )
     .expect("not a elem");
@@ -167,24 +167,6 @@ fn main() {
                             );
                         }
                     };
-                    // data.push(mem);
-                    // match data.last() {
-                    //     Some(mem) => unsafe {
-                    //         let ptr = &video_opt as *const C::video_frame_info_t
-                    //             as *mut C::video_frame_info_t;
-                    //             dbg!("{#?}", mem.clone());
-                    //             if mem.as_ptr() != std::ptr::null() && flags {
-                    //                 let code = C::agora_rtc_send_video_data(
-                    //                     conn_id,
-                    //                     mem.as_ptr() as *const c_void,
-                    //                     mem.size().try_into().unwrap(),
-                    //                     ptr,
-                    //                 );
-                    //             }
-                    //         // warn!("Send returned: {}", code)
-                    //     },
-                    //     None => {}
-                    // }
                     use std::io::{self, Write};
                     // The only thing we do in this example is print a * to indicate a received buffer
                     print!("*");
@@ -195,9 +177,6 @@ fn main() {
             })
             .build(),
     );
-    // Create a stream for handling the GStreamer message asynchronously
-    // let bus = pipeline.bus().unwrap();
-    // let send_gst_msg_rx = bus.stream();
     let chan_opt = C::rtc_channel_options_t::new();
     result_verify(
         agoraRTC::join_channel(
@@ -209,6 +188,7 @@ fn main() {
         ),
         "join channel",
     );
+    result_verify(agoraRTC::mute_local_audio(conn_id, true), "mute local audio");
     pipeline
         .set_state(gst::State::Playing)
         .expect("set playing error");
