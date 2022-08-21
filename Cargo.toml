@@ -7,6 +7,7 @@ edition = "2021"
 
 [dependencies]
 dirs = "4.0"
+function_name = "0.3.0"
 log = "0.4"
 env_logger = "0.9.0"
 agora-rtsa-rs = { path = "../rust-agora" }
