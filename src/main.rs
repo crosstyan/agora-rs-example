@@ -3,17 +3,16 @@ use agora_rtsa_rs::agoraRTC;
 use agora_rtsa_rs::agoraRTC::{LogLevel, VideoDataType, VideoFrameType, VideoStreamQuality};
 use agora_rtsa_rs::C::{self, video_data_type_e_VIDEO_DATA_TYPE_H264};
 use anyhow::{anyhow, bail, Context};
-use gst::element_error;
 use gst::glib;
 use gst::glib::closure;
 use gst::prelude::*;
+use gst::{element_error, Buffer, Memory};
 use gst_app::{AppSink, AppSrc};
 use log::{error, info, warn};
 use std::env;
-use std::ffi::{CString, c_void};
-use std::thread::sleep;
+use std::ffi::{c_void, CString};
 use std::sync::{Arc, Mutex};
-
+use std::thread::sleep;
 
 // Check if all GStreamer plugins we require are available
 fn check_plugins() -> Result<(), anyhow::Error> {
@@ -69,6 +68,7 @@ fn main() {
     let log_path = "logs";
     let log_path_c = CString::new(log_path).unwrap();
     let uid: u32 = 1234;
+    let mut data = std::vec::Vec::<Buffer>::new();
 
     // Set the default log level to debug
     if env::var("RUST_LOG").is_err() {
@@ -78,6 +78,7 @@ fn main() {
     let mut builder = env_logger::Builder::from_default_env();
     builder.target(env_logger::Target::Stdout);
     builder.init();
+    let mut data = std::vec::Vec::<Buffer>::new();
 
     gst::init();
     check_plugins();
@@ -147,13 +148,43 @@ fn main() {
         gst_app::AppSinkCallbacks::builder()
             .new_sample(move |_| {
                 if let Ok(sample) = appsink.pull_sample() {
-                    let mem = Arc::new(sample.buffer().unwrap());
-                    unsafe{
-                        if mem.as_ptr() != std::ptr::null() {
-                            let ptr = &video_opt as *const C::video_frame_info_t as *mut C::video_frame_info_t;
-                            C::agora_rtc_send_video_data(conn_id, mem.as_ptr() as *const c_void, mem.size().try_into().unwrap(), ptr);
+                    let buf = sample.buffer().unwrap().copy_deep().unwrap();
+                    let mem = buf.all_memory().unwrap();
+                    // dbg!("{#?}", mem.clone());
+                    // the buffer contains a media specific marker. for video this is the end of a frame boundary, for audio this is the start of a talkspurt.
+                    // https://gstreamer.freedesktop.org/documentation/gstreamer/gstbuffer.html?gi-language=c#GstBufferFlags
+                    let flags = buf.flags().contains(gst::BufferFlags::MARKER);
+                    unsafe {
+                        let ptr = &video_opt as *const C::video_frame_info_t
+                            as *mut C::video_frame_info_t;
+                        // dbg!("{#?}", buf.clone());
+                        if flags {
+                            let code = C::agora_rtc_send_video_data(
+                                conn_id,
+                                mem.as_ptr() as *const c_void,
+                                mem.size().try_into().unwrap(),
+                                ptr,
+                            );
                         }
-                    }
+                    };
+                    // data.push(mem);
+                    // match data.last() {
+                    //     Some(mem) => unsafe {
+                    //         let ptr = &video_opt as *const C::video_frame_info_t
+                    //             as *mut C::video_frame_info_t;
+                    //             dbg!("{#?}", mem.clone());
+                    //             if mem.as_ptr() != std::ptr::null() && flags {
+                    //                 let code = C::agora_rtc_send_video_data(
+                    //                     conn_id,
+                    //                     mem.as_ptr() as *const c_void,
+                    //                     mem.size().try_into().unwrap(),
+                    //                     ptr,
+                    //                 );
+                    //             }
+                    //         // warn!("Send returned: {}", code)
+                    //     },
+                    //     None => {}
+                    // }
                     use std::io::{self, Write};
                     // The only thing we do in this example is print a * to indicate a received buffer
                     print!("*");
@@ -162,7 +193,7 @@ fn main() {
 
                 Ok(gst::FlowSuccess::Ok)
             })
-            .build()
+            .build(),
     );
     // Create a stream for handling the GStreamer message asynchronously
     // let bus = pipeline.bus().unwrap();
@@ -181,7 +212,7 @@ fn main() {
     pipeline
         .set_state(gst::State::Playing)
         .expect("set playing error");
-    sleep(std::time::Duration::from_millis(200000));
+    sleep(std::time::Duration::from_secs(60));
     pipeline
         .set_state(gst::State::Paused)
         .expect("set state error");
