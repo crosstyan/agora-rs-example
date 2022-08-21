@@ -56,9 +56,8 @@ fn main() {
         license_value: [0; 33],
     };
 
-    let mut opt_t: C::rtc_service_option_t = opt.into();
     // You have to set logs before deallocation
-    opt_t.log_cfg.log_path = log_path_c.as_ptr();
+    let opt_t: C::rtc_service_option_t = opt.to_c_type(log_path_c.as_ptr());
 
     result_verify(agoraRTC::init(app_id, opt_t, handlers), "init");
     let conn_id: u32 = match agoraRTC::create_connection() {
