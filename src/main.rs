@@ -148,7 +148,7 @@ fn main() {
         gst_app::AppSinkCallbacks::builder()
             .new_sample(move |_| {
                 if let Ok(sample) = appsink.pull_sample() {
-                    let buf = sample.buffer().unwrap().copy_deep().unwrap();
+                    let buf = sample.buffer().unwrap().copy();
                     let mem = buf.all_memory().unwrap();
                     // dbg!("{#?}", mem.clone());
                     // the buffer contains a media specific marker. for video this is the end of a frame boundary, for audio this is the start of a talkspurt.
@@ -165,6 +165,10 @@ fn main() {
                                 mem.size().try_into().unwrap(),
                                 ptr,
                             );
+                            if code < 0 {
+                                let r = agoraRTC::err_2_reason(code);
+                                error!("send error: {}", r);
+                            }
                         }
                     };
                     use std::io::{self, Write};
