@@ -10,7 +10,7 @@ use gst::prelude::*;
 use gst_app::{AppSink, AppSrc};
 use log::{error, info, warn};
 use std::env;
-use std::ffi::CString;
+use std::ffi::{CString, c_void};
 use std::thread::sleep;
 use std::sync::{Arc, Mutex};
 
@@ -133,10 +133,27 @@ fn main() {
         .dynamic_cast::<AppSink>()
         .expect("should be an appsink");
     // https://gitlab.freedesktop.org/gstreamer/gstreamer-rs/-/blob/main/tutorials/src/bin/basic-tutorial-8.rs
+
+    result_verify(agoraRTC::init(app_id, opt_t, handlers), "init");
+    let conn_id: u32 = match agoraRTC::create_connection() {
+        Ok(id) => id,
+        Err(code) => {
+            let reason = agoraRTC::err_2_reason(code);
+            panic!("create_connection failed. Reason: {}", reason);
+        }
+    };
+
     appsink.clone().set_callbacks(
         gst_app::AppSinkCallbacks::builder()
             .new_sample(move |_| {
-                if let Ok(_sample) = appsink.pull_sample() {
+                if let Ok(sample) = appsink.pull_sample() {
+                    let mem = Arc::new(sample.buffer().unwrap());
+                    unsafe{
+                        if mem.as_ptr() != std::ptr::null() {
+                            let ptr = &video_opt as *const C::video_frame_info_t as *mut C::video_frame_info_t;
+                            C::agora_rtc_send_video_data(conn_id, mem.as_ptr() as *const c_void, mem.size().try_into().unwrap(), ptr);
+                        }
+                    }
                     use std::io::{self, Write};
                     // The only thing we do in this example is print a * to indicate a received buffer
                     print!("*");
@@ -147,21 +164,9 @@ fn main() {
             })
             .build()
     );
-    pipeline
-        .set_state(gst::State::Playing)
-        .expect("set playing error");
     // Create a stream for handling the GStreamer message asynchronously
     // let bus = pipeline.bus().unwrap();
     // let send_gst_msg_rx = bus.stream();
-
-    result_verify(agoraRTC::init(app_id, opt_t, handlers), "init");
-    let conn_id: u32 = match agoraRTC::create_connection() {
-        Ok(id) => id,
-        Err(code) => {
-            let reason = agoraRTC::err_2_reason(code);
-            panic!("create_connection failed. Reason: {}", reason);
-        }
-    };
     let chan_opt = C::rtc_channel_options_t::new();
     result_verify(
         agoraRTC::join_channel(
@@ -173,7 +178,10 @@ fn main() {
         ),
         "join channel",
     );
-    sleep(std::time::Duration::from_millis(5000));
+    pipeline
+        .set_state(gst::State::Playing)
+        .expect("set playing error");
+    sleep(std::time::Duration::from_millis(200000));
     pipeline
         .set_state(gst::State::Paused)
         .expect("set state error");
