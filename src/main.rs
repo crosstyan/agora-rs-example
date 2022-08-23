@@ -4,12 +4,10 @@ use agora_rtsa_rs::agoraRTC::{LogLevel, VideoDataType, VideoFrameType, VideoStre
 use agora_rtsa_rs::C::{self, video_data_type_e_VIDEO_DATA_TYPE_H264};
 use anyhow::{anyhow, bail, Context};
 use gst::prelude::*;
-use gst::{element_error, Buffer, Memory};
 use gst_app::{AppSink, AppSrc};
 use log::{error, info, warn, debug};
 use std::env;
 use std::ffi::{c_void, CString};
-use std::sync::{Arc, Mutex};
 use std::thread::sleep;
 
 trait ToCString {
@@ -85,8 +83,8 @@ fn main() {
     builder.target(env_logger::Target::Stdout);
     builder.init();
 
-    gst::init();
-    check_plugins();
+    gst::init().unwrap();
+    // check_plugins().unwrap();
 
     info!("Agora Version: {}", agoraRTC::get_version());
     result_verify(agoraRTC::license_verify(cert.as_str()), "license_verify");
@@ -111,7 +109,7 @@ fn main() {
 
     /// If frame_per_sec equals zero, then real timestamp will be used. So I don't need to calculate them.
     let video_opt = C::video_frame_info_t {
-        data_type: VideoDataType::H265.into(),
+        data_type: VideoDataType::H264.into(),
         stream_type: VideoStreamQuality::LOW.into(),
         frame_type: VideoFrameType::AUTO.into(),
         frame_rate: 0,
@@ -122,7 +120,7 @@ fn main() {
         "videotestsrc name=src is-live=true ! \
         clockoverlay ! \
         videoconvert ! \
-        x265enc ! \
+        x264enc ! \
         appsink name=agora ",
     )
     .expect("not a elem");
@@ -147,26 +145,28 @@ fn main() {
         }
     };
 
+    let mut file = std::fs::File::create("buf.out.h264").unwrap();
     appsink.clone().set_callbacks(
         gst_app::AppSinkCallbacks::builder()
             .new_sample(move |_| {
                 if let Ok(sample) = appsink.pull_sample() {
                     let buf = sample.buffer().unwrap().copy();
                     let mem = buf.all_memory().unwrap();
-                    // dbg!(mem.clone());
                     // dbg!(buf.clone());
+                    // dbg!(mem.clone());
                     // the buffer contains a media specific marker. for video this is the end of a frame boundary, for audio this is the start of a talkspurt.
                     // https://gstreamer.freedesktop.org/documentation/gstreamer/gstbuffer.html?gi-language=c#GstBufferFlags
+                    let readable = mem.into_mapped_memory_readable().unwrap();
+                    let slice = readable.as_slice(); // this shit is the actual buffer
                     let flags = buf.flags().contains(gst::BufferFlags::MARKER);
                     unsafe {
                         let ptr = &video_opt as *const C::video_frame_info_t
                             as *mut C::video_frame_info_t;
-                        // dbg!("{#?}", buf.clone());
                         if flags {
                             let code = C::agora_rtc_send_video_data(
                                 conn_id,
-                                mem.as_ptr() as *const c_void,
-                                mem.size().try_into().unwrap(),
+                                slice.as_ptr() as *const c_void,
+                                slice.len().try_into().unwrap(),
                                 ptr,
                             );
                             if code < 0 {
@@ -175,6 +175,7 @@ fn main() {
                             }
                         }
                     };
+                    file.write(slice).unwrap();
                     use std::io::{self, Write};
                     // The only thing we do in this example is print a * to indicate a received buffer
                     print!("*");
