@@ -1,7 +1,7 @@
 extern crate dirs;
 use agora_rtsa_rs::agoraRTC;
 use agora_rtsa_rs::agoraRTC::{LogLevel, VideoDataType, VideoFrameType, VideoStreamQuality};
-use agora_rtsa_rs::C::{self, video_data_type_e_VIDEO_DATA_TYPE_H264};
+use agora_rtsa_rs::C::{self};
 use anyhow::{anyhow, bail, Context};
 use gst::prelude::*;
 use gst_app::{AppSink, AppSrc};
@@ -150,36 +150,23 @@ fn main() {
         gst_app::AppSinkCallbacks::builder()
             .new_sample(move |_| {
                 if let Ok(sample) = appsink.pull_sample() {
+                    // See also gst::Buffer.copy_to_slice
+                    // https://docs.rs/gstreamer/0.18.8/gstreamer/buffer/struct.Buffer.html#method.copy_to_slice
                     let buf = sample.buffer().unwrap().copy();
                     let mem = buf.all_memory().unwrap();
-                    // dbg!(buf.clone());
-                    // dbg!(mem.clone());
-                    // the buffer contains a media specific marker. for video this is the end of a frame boundary, for audio this is the start of a talkspurt.
-                    // https://gstreamer.freedesktop.org/documentation/gstreamer/gstbuffer.html?gi-language=c#GstBufferFlags
                     let readable = mem.into_mapped_memory_readable().unwrap();
                     let slice = readable.as_slice(); // this shit is the actual buffer
+                    // the buffer contains a media specific marker. for video this is the end of a frame boundary, for audio this is the start of a talkspurt.
+                    // https://gstreamer.freedesktop.org/documentation/gstreamer/gstbuffer.html?gi-language=c#GstBufferFlags
                     let flags = buf.flags().contains(gst::BufferFlags::MARKER);
-                    unsafe {
-                        let ptr = &video_opt as *const C::video_frame_info_t
-                            as *mut C::video_frame_info_t;
-                        if flags {
-                            let code = C::agora_rtc_send_video_data(
-                                conn_id,
-                                slice.as_ptr() as *const c_void,
-                                slice.len().try_into().unwrap(),
-                                ptr,
-                            );
-                            if code < 0 {
-                                let r = agoraRTC::err_2_reason(code);
-                                error!("send error: {}", r);
-                            }
-                        }
-                    };
-                    file.write(slice).unwrap();
-                    use std::io::{self, Write};
-                    // The only thing we do in this example is print a * to indicate a received buffer
-                    print!("*");
-                    let _ = io::stdout().flush();
+                    if flags {
+                        agoraRTC::send_video_data(conn_id, slice, &video_opt).unwrap();
+                        file.write(slice).unwrap();
+                        // print a star to stdout
+                        use std::io::{self, Write};
+                        print!("*");
+                        let _ = io::stdout().flush();
+                    }
                 }
 
                 Ok(gst::FlowSuccess::Ok)
@@ -208,7 +195,7 @@ fn main() {
         .set_state(gst::State::Playing)
         .expect("set playing error");
 
-    sleep(std::time::Duration::from_secs(60));
+    sleep(std::time::Duration::from_secs(30));
 
     pipeline
         .set_state(gst::State::Paused)
