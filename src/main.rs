@@ -198,7 +198,7 @@ fn main() {
     sleep(std::time::Duration::from_secs(30));
 
     pipeline
-        .set_state(gst::State::Paused)
+        .set_state(gst::State::Null)
         .expect("set state error");
     result_verify(agoraRTC::leave_channel(conn_id), "leave channel");
     result_verify(agoraRTC::destroy_connection(conn_id), "destory connection");
