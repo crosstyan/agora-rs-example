@@ -2,12 +2,13 @@ extern crate dirs;
 use agora_rtsa_rs::agoraRTC;
 use agora_rtsa_rs::agoraRTC::{LogLevel, VideoDataType, VideoFrameType, VideoStreamQuality};
 use agora_rtsa_rs::C::{self};
-use anyhow::{anyhow, bail, Context};
+use anyhow::{bail};
+use serde_derive::{Serialize, Deserialize};
 use gst::prelude::*;
-use gst_app::{AppSink, AppSrc};
+use gst_app::{AppSink};
 use log::{error, info, warn, debug};
 use std::env;
-use std::ffi::{c_void, CString};
+use std::ffi::{CString};
 use std::thread::sleep;
 
 trait ToCString {
@@ -19,7 +20,38 @@ impl ToCString for &str {
     }
 }
 
+impl ToCString for String {
+    fn to_c_string(&self) -> Result<CString, std::ffi::NulError> {
+        self.as_str().to_c_string()
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+struct AppConfig {
+    cert_path: String,
+    app_id: String,
+    channel_name: String,
+    app_token: String,
+    log_path: String,
+    uid: u32
+}
+
+impl Default for AppConfig {
+    fn default() -> AppConfig {
+        let home = dirs::home_dir().unwrap();
+        AppConfig {
+            cert_path: home.join("certificate.bin").to_str().unwrap().into(),
+            app_id: "".into(),
+            channel_name: "test".into(),
+            app_token: "".into(),
+            log_path: "logs".into(),
+            uid: 1234,
+        }
+    }
+}
+
 // Check if all GStreamer plugins we require are available
+// I won't check them since I'm too lazy to export environment
 fn check_plugins() -> Result<(), anyhow::Error> {
     let needed = [
         "videotestsrc",
@@ -63,17 +95,7 @@ fn result_verify(res: Result<(), agoraRTC::ErrorCode>, action_name: &str) {
     }
 }
 
-fn main() {
-    let home = dirs::home_dir().unwrap();
-    // the certificate should be located in your home dir
-    let cert = std::fs::read_to_string(home.join("certificate.bin")).unwrap();
-    let app_id = "3759fd9101e04094869e7e69b9b3fe64";
-    let channel_name = "test";
-    let app_token = "007eJxTYGj+/iiralfpa76AYn8j3nwV82MezTuifDn7ws3WCPY901FgMDY3tUxLsTQ0MEw1MDGwNLEws0w1TzWzTLJMMk5LNTMJaGFJvnCVNfntww2sjAwQCOKzMJSkFpcwMAAA6z8gJA==";
-    let log_path = "logs";
-    let uid: u32 = 1234;
-    // let mut data = std::vec::Vec::<Buffer>::new();
-
+fn main() -> Result<(), anyhow::Error> {
     // Set the default log level to debug
     if env::var("RUST_LOG").is_err() {
         env::set_var("RUST_LOG", "debug")
@@ -83,8 +105,29 @@ fn main() {
     builder.target(env_logger::Target::Stdout);
     builder.init();
 
+    let app_name = "agora-rtsa";
+    let res: Result<AppConfig, _> = confy::load(app_name, None);
+    let path = confy::get_configuration_file_path(&app_name, None).unwrap();
+    info!("Reading config file from {:#?}", path);
+    let cfg:AppConfig = match res {
+        Ok(cfg) => cfg,
+        Err(e) => {
+            error!(
+                "Parse Config Error: Please check your configuration file at {:#?}",
+                path
+            );
+            panic!("{}", e)
+        }
+    };
+    dbg!(&cfg);
+    let cert = std::fs::read_to_string(cfg.cert_path)?;
+    let app_id = cfg.app_id;
+    let channel_name = cfg.channel_name;
+    let app_token = cfg.app_token;
+    let log_path = cfg.log_path;
+    let uid: u32 = 1234;
+
     gst::init().unwrap();
-    // check_plugins().unwrap();
 
     info!("Agora Version: {}", agoraRTC::get_version());
     result_verify(agoraRTC::license_verify(cert.as_str()), "license_verify");
@@ -202,5 +245,6 @@ fn main() {
         .expect("set state error");
     result_verify(agoraRTC::leave_channel(conn_id), "leave channel");
     result_verify(agoraRTC::destroy_connection(conn_id), "destory connection");
-    result_verify(agoraRTC::deinit(), "dinit")
+    result_verify(agoraRTC::deinit(), "dinit");
+    Ok(())
 }
