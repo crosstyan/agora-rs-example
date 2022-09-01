@@ -50,40 +50,6 @@ impl Default for AppConfig {
     }
 }
 
-// Check if all GStreamer plugins we require are available
-// I won't check them since I'm too lazy to export environment
-fn check_plugins() -> Result<(), anyhow::Error> {
-    let needed = [
-        "videotestsrc",
-        "audiotestsrc",
-        "videoconvert",
-        "audioconvert",
-        "autodetect",
-        "clockoverlay",
-        "videoscale",
-        "x264enc",
-        "x265enc",
-        "h264parse",
-        "appsink",
-    ];
-
-    let registry = gst::Registry::get();
-
-    // export GST_PLUGIN_PATH=/opt/homebrew/lib/gstreamer-1.0
-    // to find all plugins for macOS
-    let missing = needed
-        .iter()
-        .filter(|n| registry.find_plugin(n).is_none())
-        .cloned()
-        .collect::<Vec<_>>();
-
-    if !missing.is_empty() {
-        bail!("Missing plugins: {:?}", missing);
-    } else {
-        Ok(())
-    }
-}
-
 fn result_verify(res: Result<(), agoraRTC::ErrorCode>, action_name: &str) {
     match res {
         Ok(()) => info!("{} successfully", action_name),
@@ -160,10 +126,13 @@ fn main() -> Result<(), anyhow::Error> {
 
     // Create the GStreamer pipeline
     let pipeline = gst::parse_launch(
-        "videotestsrc name=src is-live=true ! \
+        "v4l2src device=/dev/video9 ! \
         clockoverlay ! \
         videoconvert ! \
-        x264enc ! \
+        videoscale ! \
+        video/x-raw,width=320,height=240 ! \
+        x264enc speed-preset=ultrafast tune=zerolatency ! \
+        queue ! \
         appsink name=agora ",
     )
     .expect("not a elem");
@@ -238,7 +207,7 @@ fn main() -> Result<(), anyhow::Error> {
         .set_state(gst::State::Playing)
         .expect("set playing error");
 
-    sleep(std::time::Duration::from_secs(30));
+    sleep(std::time::Duration::from_secs(120));
 
     pipeline
         .set_state(gst::State::Null)

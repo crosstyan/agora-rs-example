@@ -1,5 +1,5 @@
 /target
 logs
 agora_rtc_sdk.log
-.h265
-.h264
+*.h265
+*.h264
