@@ -1,30 +1,16 @@
 extern crate dirs;
 use agora_rtsa_rs::agoraRTC;
+use agora_rtsa_rs::agoraRTC::AgoraApp;
 use agora_rtsa_rs::agoraRTC::{LogLevel, VideoDataType, VideoFrameType, VideoStreamQuality};
 use agora_rtsa_rs::C::{self};
-use anyhow::{bail};
-use serde_derive::{Serialize, Deserialize};
+use anyhow::bail;
 use gst::prelude::*;
-use gst_app::{AppSink};
-use log::{error, info, warn, debug};
+use gst_app::AppSink;
+use log::{debug, error, info, warn};
+use serde_derive::{Deserialize, Serialize};
 use std::env;
-use std::ffi::{CString};
+use std::ffi::CString;
 use std::thread::sleep;
-
-trait ToCString {
-    fn to_c_string(&self) -> Result<CString, std::ffi::NulError>;
-}
-impl ToCString for &str {
-    fn to_c_string(&self) -> Result<CString, std::ffi::NulError> {
-        CString::new(&**self)
-    }
-}
-
-impl ToCString for String {
-    fn to_c_string(&self) -> Result<CString, std::ffi::NulError> {
-        self.as_str().to_c_string()
-    }
-}
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 struct AppConfig {
@@ -33,7 +19,8 @@ struct AppConfig {
     channel_name: String,
     app_token: String,
     log_path: String,
-    uid: u32
+    uid: u32,
+    out_file_path: String,
 }
 
 impl Default for AppConfig {
@@ -46,6 +33,7 @@ impl Default for AppConfig {
             app_token: "".into(),
             log_path: "logs".into(),
             uid: 1234,
+            out_file_path: "".into(),
         }
     }
 }
@@ -75,7 +63,7 @@ fn main() -> Result<(), anyhow::Error> {
     let res: Result<AppConfig, _> = confy::load(app_name, None);
     let path = confy::get_configuration_file_path(&app_name, None).unwrap();
     info!("Reading config file from {:#?}", path);
-    let cfg:AppConfig = match res {
+    let cfg: AppConfig = match res {
         Ok(cfg) => cfg,
         Err(e) => {
             error!(
@@ -96,33 +84,12 @@ fn main() -> Result<(), anyhow::Error> {
     gst::init().unwrap();
 
     info!("Agora Version: {}", agoraRTC::get_version());
-    result_verify(agoraRTC::license_verify(cert.as_str()), "license_verify");
-
-    let handlers = C::agora_rtc_event_handler_t::new();
-    let log_cfg = agoraRTC::LogConfig {
-        log_disable: false,
-        log_disable_desensitize: true,
-        log_level: LogLevel::INFO,
-    };
-
-    let opt = agoraRTC::RtcServiceOption {
-        area_code: agoraRTC::AreaCode::CN,
-        product_id: [0; 64],
-        log_cfg: log_cfg,
-        license_value: [0; 33],
-    };
-
-    // You have to set logs before deallocation
-    let log_path_c = log_path.to_c_string().unwrap();
-    let opt_t: C::rtc_service_option_t = opt.to_c_type(&log_path_c);
-
-    /// If frame_per_sec equals zero, then real timestamp will be used. So I don't need to calculate them.
-    let video_opt = C::video_frame_info_t {
-        data_type: VideoDataType::H264.into(),
-        stream_type: VideoStreamQuality::LOW.into(),
-        frame_type: VideoFrameType::AUTO.into(),
-        frame_rate: 0,
-    };
+    result_verify(
+        agoraRTC::AgoraApp::license_verify(cert.as_str()),
+        "license_verify",
+    );
+    let app = AgoraApp::new(&app_id);
+    let service_opt = agoraRTC::RtcServiceOption::new(&log_path, LogLevel::DEBUG);
 
     // Create the GStreamer pipeline
     let pipeline = gst::parse_launch(
@@ -148,16 +115,31 @@ fn main() -> Result<(), anyhow::Error> {
         .dynamic_cast::<AppSink>()
         .expect("should be an appsink");
 
-    result_verify(agoraRTC::init(&app_id.to_c_string().unwrap(), opt_t, handlers), "init");
-    let conn_id: u32 = match agoraRTC::create_connection() {
-        Ok(id) => id,
-        Err(code) => {
-            let reason = agoraRTC::err_2_reason(code);
-            panic!("create_connection failed. Reason: {}", reason);
-        }
+    result_verify(app.init(service_opt), "init");
+    let res = app.create_connection();
+    match res {
+        Ok(conn_id) => info!("connection id is {}", conn_id),
+        Err(e) => error!(
+            "can't create connection. reason: {}",
+            agoraRTC::err_2_reason(e)
+        ),
+    }
+
+    // If frame_per_sec equals zero, then real timestamp will be used. So I don't need to calculate them.
+    let video_info = C::video_frame_info_t {
+        data_type: VideoDataType::H264.into(),
+        stream_type: VideoStreamQuality::LOW.into(),
+        frame_type: VideoFrameType::AUTO.into(),
+        frame_rate: 0,
+    };
+    app.set_video_info(video_info);
+
+    // if out_file_path is not empty create such file to write
+    let mut maybe_file = match cfg.out_file_path.as_str() {
+        "" => None,
+        _ => Some(std::fs::File::create(cfg.out_file_path)?),
     };
 
-    let mut file = std::fs::File::create("buf.out.h264").unwrap();
     appsink.clone().set_callbacks(
         gst_app::AppSinkCallbacks::builder()
             .new_sample(move |_| {
@@ -168,19 +150,20 @@ fn main() -> Result<(), anyhow::Error> {
                     let mem = buf.all_memory().unwrap();
                     let readable = mem.into_mapped_memory_readable().unwrap();
                     let slice = readable.as_slice(); // this shit is the actual buffer
-                    // the buffer contains a media specific marker. for video this is the end of a frame boundary, for audio this is the start of a talkspurt.
-                    // https://gstreamer.freedesktop.org/documentation/gstreamer/gstbuffer.html?gi-language=c#GstBufferFlags
+                                                     // the buffer contains a media specific marker. for video this is the end of a frame boundary, for audio this is the start of a talkspurt.
+                                                     // https://gstreamer.freedesktop.org/documentation/gstreamer/gstbuffer.html?gi-language=c#GstBufferFlags
                     let flags = buf.flags().contains(gst::BufferFlags::MARKER);
                     if flags {
-                        agoraRTC::send_video_data(conn_id, slice, &video_opt).unwrap();
-                        file.write(slice).unwrap();
+                        app.send_video_data_default(slice).unwrap();
+                        if let Some(file) = &mut maybe_file {
+                            file.write(slice).unwrap();
+                        }
                         // print a star to stdout
                         use std::io::{self, Write};
                         print!("*");
                         let _ = io::stdout().flush();
                     }
                 }
-
                 Ok(gst::FlowSuccess::Ok)
             })
             .build(),
@@ -188,17 +171,14 @@ fn main() -> Result<(), anyhow::Error> {
 
     let chan_opt = C::rtc_channel_options_t::new();
     result_verify(
-        agoraRTC::join_channel(
-            conn_id,
-            &channel_name.to_c_string().unwrap(),
-            Some(uid),
-            &app_token.to_c_string().unwrap(),
-            chan_opt,
-        ),
+        app.join_channel(&channel_name, Some(uid), &app_token, chan_opt),
         "join channel",
     );
 
-    result_verify(agoraRTC::mute_local_audio(conn_id, true), "mute local audio");
+    result_verify(
+        app.mute_local_audio(true),
+        "mute local audio",
+    );
 
     // add some delay to make sure header sent
     sleep(std::time::Duration::from_secs(2));
@@ -212,8 +192,6 @@ fn main() -> Result<(), anyhow::Error> {
     pipeline
         .set_state(gst::State::Null)
         .expect("set state error");
-    result_verify(agoraRTC::leave_channel(conn_id), "leave channel");
-    result_verify(agoraRTC::destroy_connection(conn_id), "destory connection");
-    result_verify(agoraRTC::deinit(), "dinit");
+    // AgoraApp should be dropped here
     Ok(())
 }
