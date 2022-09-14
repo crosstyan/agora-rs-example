@@ -89,7 +89,7 @@ fn main() -> Result<(), anyhow::Error> {
         agoraRTC::AgoraApp::license_verify(cert.as_str()),
         "license_verify",
     );
-    let app_ref = Arc::new(Mutex::new(AgoraApp::new(&app_id)));
+    let app = Arc::new(Mutex::new(AgoraApp::new(&app_id)));
     let service_opt = agoraRTC::RtcServiceOption::new(&log_path, LogLevel::DEBUG);
 
     // Create the GStreamer pipeline
@@ -116,7 +116,7 @@ fn main() -> Result<(), anyhow::Error> {
         .dynamic_cast::<AppSink>()
         .expect("should be an appsink");
 
-    let mut app_guard = app_ref.lock().expect("can't lock");
+    let mut app_guard = app.lock().expect("can't lock");
     result_verify(app_guard.init(service_opt), "init");
     let res = app_guard.create_connection();
     match res {
@@ -151,8 +151,6 @@ fn main() -> Result<(), anyhow::Error> {
     result_verify(app_guard.mute_local_audio(true), "mute local audio");
     drop(app_guard);
 
-    // this one will be move to thread
-    let app = app_ref.clone();
     appsink.clone().set_callbacks(
         gst_app::AppSinkCallbacks::builder()
             .new_sample(move |_| {
