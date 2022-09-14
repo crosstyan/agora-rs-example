@@ -84,14 +84,6 @@ fn main() -> Result<(), anyhow::Error> {
 
     gst::init().unwrap();
 
-    info!("Agora Version: {}", agoraRTC::get_version());
-    result_verify(
-        agoraRTC::AgoraApp::license_verify(cert.as_str()),
-        "license_verify",
-    );
-    let app = Arc::new(Mutex::new(AgoraApp::new(&app_id)));
-    let service_opt = agoraRTC::RtcServiceOption::new(&log_path, LogLevel::DEBUG);
-
     // Create the GStreamer pipeline
     let pipeline = gst::parse_launch(
         "v4l2src device=/dev/video9 ! \
@@ -116,9 +108,16 @@ fn main() -> Result<(), anyhow::Error> {
         .dynamic_cast::<AppSink>()
         .expect("should be an appsink");
 
-    let mut app_guard = app.lock().expect("can't lock");
-    result_verify(app_guard.init(service_opt), "init");
-    let res = app_guard.create_connection();
+    info!("Agora Version: {}", agoraRTC::get_version());
+    result_verify(
+        agoraRTC::AgoraApp::license_verify(cert.as_str()),
+        "license_verify",
+    );
+    let mut app = AgoraApp::new(&app_id);
+    let service_opt = agoraRTC::RtcServiceOption::new(&log_path, LogLevel::DEBUG);
+
+    result_verify(app.init(service_opt), "init");
+    let res = app.create_connection();
     match res {
         Ok(conn_id) => info!("connection id is {}", conn_id),
         Err(e) => error!(
@@ -134,7 +133,7 @@ fn main() -> Result<(), anyhow::Error> {
         frame_type: VideoFrameType::AUTO.into(),
         frame_rate: 0,
     };
-    app_guard.set_video_info(video_info);
+    app.set_video_info(video_info);
 
     // if out_file_path is not empty create such file to write
     let mut maybe_file = match cfg.out_file_path.as_str() {
@@ -144,12 +143,11 @@ fn main() -> Result<(), anyhow::Error> {
 
     let chan_opt = C::rtc_channel_options_t::new();
     result_verify(
-        app_guard.join_channel(&channel_name, Some(uid), &app_token, chan_opt),
+        app.join_channel(&channel_name, Some(uid), &app_token, chan_opt),
         "join channel",
     );
 
-    result_verify(app_guard.mute_local_audio(true), "mute local audio");
-    drop(app_guard);
+    result_verify(app.mute_local_audio(true), "mute local audio");
 
     appsink.clone().set_callbacks(
         gst_app::AppSinkCallbacks::builder()
@@ -165,7 +163,7 @@ fn main() -> Result<(), anyhow::Error> {
                                                      // https://gstreamer.freedesktop.org/documentation/gstreamer/gstbuffer.html?gi-language=c#GstBufferFlags
                     let flags = buf.flags().contains(gst::BufferFlags::MARKER);
                     if flags {
-                        app.lock().expect("can't lock").send_video_data_default(slice).unwrap();
+                        app.send_video_data_default(slice).unwrap();
                         if let Some(file) = &mut maybe_file {
                             file.write(slice).unwrap();
                         }
