@@ -9,8 +9,6 @@ use gst_app::AppSink;
 use log::{debug, error, info, warn};
 use serde_derive::{Deserialize, Serialize};
 use std::env;
-use std::ffi::CString;
-use std::sync::{Arc, Mutex};
 use std::thread::sleep;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -86,7 +84,7 @@ fn main() -> Result<(), anyhow::Error> {
 
     // Create the GStreamer pipeline
     let pipeline = gst::parse_launch(
-        "v4l2src device=/dev/video9 ! \
+        "videotestsrc name=src is-live=true  ! \
         clockoverlay ! \
         videoconvert ! \
         videoscale ! \
@@ -149,6 +147,7 @@ fn main() -> Result<(), anyhow::Error> {
 
     result_verify(app.mute_local_audio(true), "mute local audio");
 
+    // app is moved now and you can't use it anymore
     appsink.clone().set_callbacks(
         gst_app::AppSinkCallbacks::builder()
             .new_sample(move |_| {
@@ -163,14 +162,22 @@ fn main() -> Result<(), anyhow::Error> {
                                                      // https://gstreamer.freedesktop.org/documentation/gstreamer/gstbuffer.html?gi-language=c#GstBufferFlags
                     let flags = buf.flags().contains(gst::BufferFlags::MARKER);
                     if flags {
-                        app.send_video_data_default(slice).unwrap();
+                        use std::io::{self, Write};
+                        let code = app.send_video_data_default(slice);
                         if let Some(file) = &mut maybe_file {
                             file.write(slice).unwrap();
                         }
-                        // print a star to stdout
-                        use std::io::{self, Write};
-                        print!("*");
-                        let _ = io::stdout().flush();
+                        match code {
+                            Ok(_) => {
+                                // print a star to stdout
+                                print!("*");
+                                let _ = io::stdout().flush();
+                            },
+                            Err(_e) => {
+                                print!("x");
+                                let _ = io::stdout().flush();
+                            },
+                        }
                     }
                 }
                 Ok(gst::FlowSuccess::Ok)
