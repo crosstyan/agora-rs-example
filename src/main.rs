@@ -9,6 +9,8 @@ use gst_app::AppSink;
 use log::{debug, error, info, warn};
 use serde_derive::{Deserialize, Serialize};
 use std::env;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::thread::sleep;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -49,6 +51,16 @@ fn result_verify(res: Result<(), agoraRTC::ErrorCode>, action_name: &str) {
 }
 
 fn main() -> Result<(), anyhow::Error> {
+    // handle ctrl+c
+    let run_flag = Arc::new(AtomicBool::new(true));
+    let r = run_flag.clone();
+    ctrlc::set_handler(move || {
+        r.store(false, Ordering::SeqCst);
+        print!("\n");
+        info!("Ctrl+C received, exiting...");
+    })
+    .expect("Error setting Ctrl-C handler");
+
     // Set the default log level to debug
     if env::var("RUST_LOG").is_err() {
         env::set_var("RUST_LOG", "debug")
@@ -195,11 +207,15 @@ fn main() -> Result<(), anyhow::Error> {
         .set_state(gst::State::Playing)
         .expect("set playing error");
 
-    sleep(std::time::Duration::from_secs(120));
+    // run forever until ctrl-c
+    while run_flag.load(Ordering::SeqCst) {}
 
     pipeline
         .set_state(gst::State::Null)
         .expect("set state error");
     // AgoraApp should be dropped here
+    // But it won't since the ownership is moved to the closure
+    // we should destroy it anyway
+    let _ = AgoraApp::deinit();
     Ok(())
 }
