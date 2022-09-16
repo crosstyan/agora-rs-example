@@ -2,7 +2,7 @@ extern crate dirs;
 use agora_rtsa_rs::agoraRTC;
 use agora_rtsa_rs::agoraRTC::AgoraApp;
 use agora_rtsa_rs::agoraRTC::{LogLevel, VideoDataType, VideoFrameType, VideoStreamQuality};
-use agora_rtsa_rs::C::{self};
+use agora_rtsa_rs::C;
 use anyhow::bail;
 use gst::prelude::*;
 use gst_app::AppSink;
@@ -54,9 +54,9 @@ fn main() -> Result<(), anyhow::Error> {
         env::set_var("RUST_LOG", "debug")
     }
     // Output the log to STDOUT
-    let mut builder = env_logger::Builder::from_default_env();
-    builder.target(env_logger::Target::Stdout);
-    builder.init();
+    let mut log_builder = env_logger::Builder::from_default_env();
+    log_builder.target(env_logger::Target::Stdout);
+    log_builder.init();
 
     let app_name = "agora-rtsa";
     let res: Result<AppConfig, _> = confy::load(app_name, None);
@@ -157,9 +157,12 @@ fn main() -> Result<(), anyhow::Error> {
                     let buf = sample.buffer().unwrap().copy();
                     let mem = buf.all_memory().unwrap();
                     let readable = mem.into_mapped_memory_readable().unwrap();
-                    let slice = readable.as_slice(); // this shit is the actual buffer
-                                                     // the buffer contains a media specific marker. for video this is the end of a frame boundary, for audio this is the start of a talkspurt.
-                                                     // https://gstreamer.freedesktop.org/documentation/gstreamer/gstbuffer.html?gi-language=c#GstBufferFlags
+                    // this shit is the actual buffer the buffer contains a
+                    // media specific marker. for video this is the end of a
+                    // frame boundary, for audio this is the start of a
+                    // talkspurt.
+                    // https://gstreamer.freedesktop.org/documentation/gstreamer/gstbuffer.html?gi-language=c#GstBufferFlags
+                    let slice = readable.as_slice();
                     let flags = buf.flags().contains(gst::BufferFlags::MARKER);
                     if flags {
                         use std::io::{self, Write};
@@ -172,11 +175,11 @@ fn main() -> Result<(), anyhow::Error> {
                                 // print a star to stdout
                                 print!("*");
                                 let _ = io::stdout().flush();
-                            },
+                            }
                             Err(_e) => {
                                 print!("x");
                                 let _ = io::stdout().flush();
-                            },
+                            }
                         }
                     }
                 }
