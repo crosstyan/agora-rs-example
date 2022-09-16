@@ -55,7 +55,7 @@ fn main() -> Result<(), anyhow::Error> {
     let run_flag = Arc::new(AtomicBool::new(true));
     let r = run_flag.clone();
     ctrlc::set_handler(move || {
-        r.store(false, Ordering::SeqCst);
+        r.store(false, Ordering::Relaxed);
         print!("\n");
         info!("Ctrl+C received, exiting...");
     })
@@ -208,7 +208,7 @@ fn main() -> Result<(), anyhow::Error> {
         .expect("set playing error");
 
     // run forever until ctrl-c
-    while run_flag.load(Ordering::SeqCst) {}
+    while run_flag.load(Ordering::Relaxed) {}
 
     pipeline
         .set_state(gst::State::Null)
